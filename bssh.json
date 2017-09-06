@@ -1,5 +1,6 @@
 {
 	"proxy_url": "https://python.testrp.security.allizom.org/",
-	"cache": "bssh_cache",
+	"cache": "~/.ssh/bssh_cache",
+	"ssh_key_path": "~/.ssh/bssh_key",
 	"debug": "true"
 }
