@@ -88,8 +88,11 @@ class Session():
 
     def load(self):
         with open(self.cache_path, 'r') as fd:
-            d = DotDict(json.load(fd))
-            self.tokens = d
+            try:
+                d = DotDict(json.load(fd))
+                self.tokens = d
+            except json.decoder.JSONDecodeError:
+                logger.error('Cache appears corrupted. Starting with new values.')
 
     def _get_cookie_jar(self):
         """
