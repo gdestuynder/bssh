@@ -4,6 +4,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 # Contributors: Guillaume Destuynder <gdestuynder@mozilla.com>
 
+import argparse
 import array
 import json
 import logging
@@ -14,6 +15,7 @@ import sys
 import secrets
 import time
 import webbrowser
+import yaml
 
 def setup_logging(stream=sys.stdout, level=logging.DEBUG):
     """
@@ -49,14 +51,14 @@ class DotDict(dict):
 
 class Session():
     """
-    The Session class contains all necessary session data for bssh,
+    The Session class contains all necessary session data for bcorp,
     such as CLI token, access proxy token, etc.
     """
     _CLI_TOKEN_EXP_DELTA = 2538000 # 30 days
     _CLI_TOKEN_LEN = 48 # 48 bits (~64 chars)
     _API_REQUEST_TIMEOUT = 60 # 1 minute
     _API_REQUEST_DELAY = 1 # Check API every 1 second
-    _API_SESSION_NAME ='oidc_session'
+    _API_SESSION_NAME ='session'
 
     def __init__(self, cache_path, proxy_url, ssh_user, ssh_host, ssh_port=22):
         self.tokens = DotDict({
@@ -234,6 +236,9 @@ class Session():
         return creds
 
 def save_ssh_creds(ssh_key_path, creds):
+    if (creds.private_key is None):
+        logger.error("Saving SSH Credentials failed: No credentials received.")
+        return
     ssh_key = os.path.expanduser(ssh_key_path)
     logger.debug('Saving SSH credentials to {}'.format(ssh_key))
 
@@ -248,37 +253,30 @@ def usage():
     logging.info("""USAGE: {} remote_hostname:remote_port:remote_user""".format(sys.argv[0]))
     sys.exit(1)
 
-def main():
+def main(args, config):
     global logger
-    # Load config
-    with open('bssh.json') as fd:
-        config = DotDict(json.load(fd))
-        # Ensure we have no double / at the end of the URL as this confuses reverse proxies
-        config.proxy_url = config.proxy_url.rstrip('/')
 
-    if config.debug != 'true':
+    if not args.verbose:
         level = logging.INFO
     else:
         level = logging.DEBUG
     logger = setup_logging(stream=sys.stderr, level=level)
 
+
     # Get arguments from OpenSSH's ProxyCommand
     # this program is usually called as such:
     # %h: remote hostname, %p: remote port, %r: remote user name
     # ssh -oProxyCommand='/usr/bin/bssh.py %h:%p:%r' kang@myhost.com
-    if len(sys.argv) != 2:
-        usage()
-
     try:
-        (ssh_host, ssh_port, ssh_user) = sys.argv[1].split(':')
+        (ssh_host, ssh_port, ssh_user) = args.moduleopts.split(':')
     except NameError:
         usage()
 
     # Load session (or create new one)
-    ses = Session(config.cache, config.proxy_url, ssh_user, ssh_host, ssh_port)
+    ses = Session(config.openssh.cache, config.proxy_url, ssh_user, ssh_host, ssh_port)
     creds = ses.get_ssh_credentials(ssh_user)
     logger.debug('SSH credentials data for user {}:\n{}\n{}'.format(ssh_user, creds.public_key, creds.certificate))
-    save_ssh_creds(config.ssh_key_path, creds)
+    save_ssh_creds(config.openssh.ssh_key_path, creds)
     del(creds)
 
     # Pass to SSH
@@ -291,7 +289,7 @@ def main():
     # https://github.com/solrex/netcat/blob/master/netcat.c#L1246
     # http://www.gabriel.urdhr.fr/2016/08/07/openssh-proxyusefdpass/
     import subprocess
-    subprocess.call(['ssh-add', os.path.expanduser('~/.ssh/bssh_key')])
+    subprocess.call(['ssh-add', os.path.expanduser('~/.ssh/bcorp_key')])
     s = socket.create_connection((ssh_host, int(ssh_port)))
     import select
     import fcntl
@@ -314,4 +312,16 @@ def main():
     s.close()
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-t', '--type', required=True, choices=['ssh', 'sts'], help='Select type of credentials to request')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable debugging / verbose messages')
+    parser.add_argument('-c', '--config',  help='Specify a configuration file')
+    parser.add_argument('moduleopts', help='Module specific options')
+    args = parser.parse_args()
+
+    with open(args.config or 'bcorp.yml') as fd:
+        config = DotDict(yaml.load(fd))
+        # Ensure we have no double / at the end of the URL as this confuses reverse proxies
+        config.proxy_url = config.proxy_url.rstrip('/')
+
+    main(args, config)

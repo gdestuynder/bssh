@@ -1,0 +1,7 @@
+proxy_url: "https://accessproxy.security.allizom.org/"
+openssh:
+    cache: "~/.ssh/bcorp_cache"
+    ssh_key_path: "~/.ssh/bcorp_key"
+sts:
+    credentials: "~/.aws/credentials"
+    profile: "bcorp"

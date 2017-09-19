@@ -1,4 +1,5 @@
-# bssh
-BeyondCorp-style SSH ProxyCommand, allowing for federated SSH clients
+# bcorp
+BeyondCorp-style client for https://github.com/mozilla-iam/federated_access_proxy,
+allowing for federated SSH, STS, etc. CLI clients to connect.
 
 # Status: POC
