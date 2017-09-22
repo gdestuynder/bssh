@@ -6,13 +6,15 @@
 
 import argparse
 import array
+from datetime import datetime
 import json
 import logging
 import os
 import requests
 import socket
-import sys
 import secrets
+import subprocess
+import sys
 import time
 import webbrowser
 import yaml
@@ -58,27 +60,28 @@ class Session():
     _CLI_TOKEN_LEN = 48 # 48 bits (~64 chars)
     _API_REQUEST_TIMEOUT = 60 # 1 minute
     _API_REQUEST_DELAY = 1 # Check API every 1 second
-    _API_SESSION_NAME ='session'
+    _API_SESSION_NAME = 'session'
 
-    def __init__(self, cache_path, proxy_url, ssh_user, ssh_host, ssh_port=22):
+    def __init__(self, config, args):
         self.tokens = DotDict({
             'cli': {'value': '', 'exp': None},
-            'access_proxy': {'value': '', 'exp': None}
+            'access_proxy': {'value': '', 'exp': None},
             })
-        self.cache_path = os.path.expanduser(cache_path)
+        self.config = config
+        self.ssh_host = args.ssh_host
+        self.ssh_port = args.ssh_port
+        self.ssh_user = args.ssh_user
+        self.ssh_key = os.path.expanduser(self.config.openssh.ssh_key_path)
+        self.cache_path = os.path.expanduser(self.config.openssh.cache)
+
+        # Load cache
         try:
             self.load()
         except FileNotFoundError:
             logger.debug('No cache found.')
             pass
-        self.ssh_user = ssh_user
-        self.ssh_host = ssh_host
-        self.ssh_port = ssh_port
-        self.proxy_url = proxy_url
-
         # Check if we have or need a CLI token
         self._verify_cli_token()
-
         # Check if we have or need an Access Proxy token
         self._verify_access_proxy_token()
 
@@ -126,7 +129,7 @@ class Session():
                     time.sleep(self._API_REQUEST_DELAY)
                 if time.time() >= timeout:
                     logger.warning("connect to access proxy host API {}: Connection timed out. Have you authenticated in the "
-                          "web browser window?".format(self.proxy_url))
+                          "web browser window?".format(self.config.proxy_url))
                     sys.exit(127)
                     return
         else:
@@ -137,7 +140,7 @@ class Session():
         Check if we got a proxy api reply
         """
         # Double / is required in order to access the path that is not protected by the reverse-proxy
-        r = requests.get('{}/api/session?cli_token={}'.format(self.proxy_url, self.tokens.cli.value))
+        r = requests.get('{}/api/session?cli_token={}'.format(self.config.proxy_url, self.tokens.cli.value))
         # 202 accepted - means CLI token is not yet authenticated interactively by the user
         if r.status_code == 202:
             return False
@@ -168,8 +171,8 @@ class Session():
                                                                                             user = self.ssh_user,
                                                                                             cli= self.tokens.cli.value)
         logging.info("If no browser window was opened, please manually authenticate to the "
-              "access proxy: {}{}".format(self.proxy_url, parameters))
-        webbrowser.open(self.proxy_url+parameters, new=0, autoraise=True)
+              "access proxy: {}{}".format(self.config.proxy_url, parameters))
+        webbrowser.open(self.config.proxy_url+parameters, new=0, autoraise=True)
 
     def _check_api_authenticated(self, r=None):
         """
@@ -182,7 +185,7 @@ class Session():
         if not r:
             r_src_self = True
             headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:57.0) Gecko/20100101 Firefox/57.0'}
-            r = requests.get('{}/api/ping'.format(self.proxy_url), cookies=self._get_cookie_jar(), headers=headers)
+            r = requests.get('{}/api/ping'.format(self.config.proxy_url), cookies=self._get_cookie_jar(), headers=headers)
             if r.status_code != 200:
                 logger.debug('HTTP status code: {}, body: {}'.format(r.status_code, r.text[0:100]))
 
@@ -207,13 +210,59 @@ class Session():
         logger.debug('access_proxy token is still valid')
         return True
 
-    def get_ssh_credentials(self, user):
+    def get_ssh_certificate_expiration(self):
+        """
+        Get certificate expiration from the certificate file
+        Currently done using ssh-keygen though a native implementation would be better
+        Returns a string that represent the amount of time until the certificate signature expires or None if invalid
+        The time format is OpenSSH's time format
+        """
+        # See `man sshd_config` `TIME FORMATS` for time syntax
+        # Output format contains a line such as:
+        #        Valid: from 2017-09-19T16:10:21 to 2017-09-19T17:20:21
+        key_validity = '15m'
+
+        try:
+            stdout = subprocess.check_output(['ssh-keygen', '-L', '-f', self.ssh_key+'-cert.pub'])
+        except subprocess.CalledProcessError as e:
+            logger.debug('Could not read previous SSH key: {}'.format(e))
+            stdout = ''
+            return None
+        try:
+            for tmp in stdout.decode('ascii').split('\n'):
+                if tmp.find('Valid: ') != -1:
+                    end_time = tmp.split(' to ')[-1]
+                    # Expiration is how many seconds from now to end_time
+                    dt = datetime.strptime(end_time, '%Y-%m-%dT%H:%M:%S')
+                    exp = int(dt.timestamp())
+                    delta = exp - int(time.time())
+                    if delta < 0:
+                        logger.error('SSH key is already expired. Will try to use default expiration, but this might '
+                                     'not work. Time remaining was: {} seconds'.format(str(delta)))
+                    else:
+                        key_validity = '{}s'.format(str(delta))
+                        logger.debug('SSH key is valid for {} seconds'.format(str(delta)))
+                    break
+        except:
+            # Use default if parsing fails in any way
+            logging.debug('Failed to read SSH key expiration time, using default: {}'.format(key_validity))
+            return key_validity
+        return key_validity
+
+    def get_ssh_credentials(self):
         """
         Retrieves the certificate and private key from the access proxy.
         """
         creds = DotDict({'private_key': None, 'public_key': None, 'certificate': None})
+
+        # Are local credentials still valid?
+        exp = self.get_ssh_certificate_expiration()
+        if (exp):
+            logger.debug('Returning cached SSH credentials (valid for another {})'.format(exp))
+            return creds
+
         headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:57.0) Gecko/20100101 Firefox/57.0'}
-        r = requests.get('{}/api/ssh?cli_token={}'.format(self.proxy_url, self.tokens.cli.value),
+        r = requests.get('{}/api/ssh?cli_token={}'.format(self.config.proxy_url, self.tokens.cli.value),
                          cookies=self._get_cookie_jar(), headers=headers)
         if not self._check_api_authenticated(r):
             return creds
@@ -238,19 +287,21 @@ class Session():
             return creds
         return creds
 
-def save_ssh_creds(ssh_key_path, creds):
-    if (creds.private_key is None):
-        logger.error("Saving SSH Credentials failed: No credentials received.")
-        return
-    ssh_key = os.path.expanduser(ssh_key_path)
-    logger.debug('Saving SSH credentials to {}'.format(ssh_key))
+    def load_ssh_key(self):
+        subprocess.call(['ssh-add', '-t', key_validity, key_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    with open(os.open(ssh_key, os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
-        fd.write(creds.private_key)
-    with open(os.open(ssh_key+'.pub', os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
-        fd.write(creds.public_key)
-    with open(os.open(ssh_key+'-cert.pub', os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
-        fd.write(creds.certificate)
+    def save_ssh_creds(self, creds):
+        if (creds.private_key is None):
+            logger.error("Saving SSH Credentials failed: No credentials received.")
+            return
+        logger.debug('Saving SSH credentials to {}'.format(self.ssh_key))
+
+        with open(os.open(self.ssh_key, os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
+            fd.write(creds.private_key)
+        with open(os.open(self.ssh_key+'.pub', os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
+            fd.write(creds.public_key)
+        with open(os.open(self.ssh_key+'-cert.pub', os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
+            fd.write(creds.certificate)
 
 def usage():
     logging.info("""USAGE: {} remote_hostname:remote_port:remote_user""".format(sys.argv[0]))
@@ -272,15 +323,17 @@ def main(args, config):
     # ssh -oProxyCommand='/usr/bin/bssh.py %h:%p:%r' kang@myhost.com
     try:
         (ssh_host, ssh_port, ssh_user) = args.moduleopts.split(':')
+        args = DotDict({'ssh_host': ssh_host, 'ssh_port': ssh_port, 'ssh_user': ssh_user})
     except NameError:
         usage()
 
     # Load session (or create new one)
-    ses = Session(config.openssh.cache, config.proxy_url, ssh_user, ssh_host, ssh_port)
-    creds = ses.get_ssh_credentials(ssh_user)
-    logger.debug('SSH credentials data for user {}:\n{}\n{}'.format(ssh_user, creds.public_key, creds.certificate))
-    save_ssh_creds(config.openssh.ssh_key_path, creds)
-    del(creds)
+    ses = Session(config, args)
+    if (not ses.get_ssh_certificate_expiration()):
+        creds = ses.get_ssh_credentials()
+        save_ssh_creds(self.config.ssh_key_path, creds)
+        logger.debug('New SSH credentials data for user {}:\n{}\n{}'.format(args.ssh_user, creds.public_key, creds.certificate))
+        del(creds)
 
     # Pass to SSH
     # XXX FIXME figure out ProxyUseFdPass
@@ -291,9 +344,7 @@ def main(args, config):
     #See also https://lists.mindrot.org/pipermail/openssh-unix-dev/2013-June/031483.html
     # https://github.com/solrex/netcat/blob/master/netcat.c#L1246
     # http://www.gabriel.urdhr.fr/2016/08/07/openssh-proxyusefdpass/
-    import subprocess
-    subprocess.call(['ssh-add', os.path.expanduser('~/.ssh/bcorp_key')])
-    s = socket.create_connection((ssh_host, int(ssh_port)))
+    s = socket.create_connection((args.ssh_host, int(args.ssh_port)))
     import select
     import fcntl
     fcntl.fcntl(sys.stdin.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
