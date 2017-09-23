@@ -1,6 +1,0 @@
-{
-	"proxy_url": "https://test.accessproxy.security.allizom.org/",
-	"cache": "~/.ssh/bssh_cache",
-	"ssh_key_path": "~/.ssh/bssh_key",
-	"debug": "true"
-}
