@@ -27,5 +27,6 @@ setup(
             "Development Status :: 5 - Production/Stable",
             "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
             ],
-        scripts = ['bcorp']
+        scripts = ['bcorp'],
+        data_files = [('config', ['bcorp.yml'])]
 )
