@@ -76,20 +76,33 @@ class Session():
 
         # Load cache
         try:
-            self.load()
+            self._load()
         except FileNotFoundError:
             logger.debug('No cache found.')
             pass
+
+    def load_credentials(self):
+        # Check if we still have any valid credentials
+        creds = self._get_ssh_credentials()
+        if (creds.expiration):
+            self._load_ssh_key(creds.expiration)
+            return True
+        return False
+
+    def request_new_credentials(self):
         # Check if we have or need a CLI token
         self._verify_cli_token()
         # Check if we have or need an Access Proxy token
         self._verify_access_proxy_token()
+        creds = self._get_ssh_credentials()
+        del(creds)
+        return True
 
-    def save(self):
+    def _save(self):
         with open(os.open(self.cache_path, os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
             json.dump(self.tokens, fd)
 
-    def load(self):
+    def _load(self):
         with open(self.cache_path, 'r') as fd:
             try:
                 d = DotDict(json.load(fd))
@@ -110,20 +123,21 @@ class Session():
             logger.debug('Invalid CLI token, re-generating')
             self.tokens.cli.value = secrets.token_urlsafe(self._CLI_TOKEN_LEN)
             self.tokens.cli.exp = time.time()+ self._CLI_TOKEN_EXP_DELTA
-            self.save()
+            self._save()
             logger.debug('Generated new CLI token: {}'.format(self.tokens.cli.value))
         else:
             logger.debug('Re-using CLI token: {}'.format(self.tokens.cli.value))
 
     def _verify_access_proxy_token(self):
         if not self._check_api_authenticated():
-            self.request_access_proxy_token()
+            self._request_access_proxy_token()
             timeout = time.time()+self._API_REQUEST_TIMEOUT
             while True:
                 logger.debug('Polling proxy API for another {} seconds until time out'.format((timeout-time.time())))
-                if self.poll_proxy_api():
+                if self._poll_proxy_api():
                     if self._check_api_authenticated():
                         logger.debug('All tokens are valid')
+                        self.agent_pid = None
                         return
                 else:
                     time.sleep(self._API_REQUEST_DELAY)
@@ -135,7 +149,7 @@ class Session():
         else:
             logger.debug('Re-using access proxy token: {}'.format(self.tokens.access_proxy.value))
 
-    def poll_proxy_api(self):
+    def _poll_proxy_api(self):
         """
         Check if we got a proxy api reply
         """
@@ -156,13 +170,13 @@ class Session():
                 return False
             self.tokens.access_proxy.value = r.json().get('ap_session')
             logger.debug('Retrieved new access proxy token: {}'.format(self.tokens.access_proxy.value))
-            self.save()
+            self._save()
             return True
         else:
             logger.debug('HTTP status code: {}, body: {}'.format(r.status_code, r.text[0:100]))
             return False
 
-    def request_access_proxy_token(self):
+    def _request_access_proxy_token(self):
         """
         Requests an Access Proxy token from the .. Access Proxy
         """
@@ -210,7 +224,7 @@ class Session():
         logger.debug('access_proxy token is still valid')
         return True
 
-    def get_ssh_certificate_expiration(self):
+    def _get_ssh_certificate_expiration(self):
         """
         Get certificate expiration from the certificate file
         Currently done using ssh-keygen though a native implementation would be better
@@ -237,8 +251,9 @@ class Session():
                     exp = int(dt.timestamp())
                     delta = exp - int(time.time())
                     if delta < 0:
-                        logger.error('SSH key is already expired. Will try to use default expiration, but this might '
-                                     'not work. Time remaining was: {} seconds'.format(str(delta)))
+                        logger.error('SSH key is already expired. You need a new key. '
+                                     'Time remaining was: {} seconds'.format(str(delta)))
+                        return None
                     else:
                         key_validity = '{}s'.format(str(delta))
                         logger.debug('SSH key is valid for {} seconds'.format(str(delta)))
@@ -249,16 +264,16 @@ class Session():
             return key_validity
         return key_validity
 
-    def get_ssh_credentials(self):
+    def _get_ssh_credentials(self):
         """
         Retrieves the certificate and private key from the access proxy.
         """
-        creds = DotDict({'private_key': None, 'public_key': None, 'certificate': None})
+        creds = DotDict({'private_key': None, 'public_key': None, 'certificate': None, 'expiration': None})
 
         # Are local credentials still valid?
-        exp = self.get_ssh_certificate_expiration()
-        if (exp):
-            logger.debug('Returning cached SSH credentials (valid for another {})'.format(exp))
+        creds.expiration = self._get_ssh_certificate_expiration()
+        if (creds.expiration):
+            logger.debug('Returning cached SSH credentials (valid for another {})'.format(creds.expiration))
             return creds
 
         headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:57.0) Gecko/20100101 Firefox/57.0'}
@@ -285,12 +300,24 @@ class Session():
         except KeyError:
             logger.error('Could not interpret access proxy data')
             return creds
+
+        logger.debug('Got new SSH credentials')
+        self._save_ssh_creds(creds)
         return creds
 
-    def load_ssh_key(self):
-        subprocess.call(['ssh-add', '-t', key_validity, key_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def _load_ssh_key(self, key_validity):
+        # We need to first unload as we cannot destroy ourselves at the end of the session
+        # Because the ssh client kills us first, and we want to make sure we start clean instead of piling up
+        # keys in the agent which can cause issues (for ex ssh will try the first 5 keys then the sshd will refuse the
+        # client because it has tried too many times!)
+        # Bonus: key stay loaded for the user if it's still valid as well
+        # Note: we also abuse subprocess.PIPE here, but we know that the buffer is too small to cause deadlocks
+        logger.debug('Unloading previous key if any')
+        subprocess.call(['ssh-add', '-d', self.ssh_key], stderr=subprocess.PIPE)
+        logger.debug('Loading key in ssh-agent')
+        return subprocess.call(['ssh-add', '-t', key_validity, self.ssh_key], stderr=subprocess.PIPE)
 
-    def save_ssh_creds(self, creds):
+    def _save_ssh_creds(self, creds):
         if (creds.private_key is None):
             logger.error("Saving SSH Credentials failed: No credentials received.")
             return
@@ -302,6 +329,7 @@ class Session():
             fd.write(creds.public_key)
         with open(os.open(self.ssh_key+'-cert.pub', os.O_WRONLY|os.O_CREAT, mode=0o600), 'w') as fd:
             fd.write(creds.certificate)
+        del(creds)
 
 def usage():
     logging.info("""USAGE: {} remote_hostname:remote_port:remote_user""".format(sys.argv[0]))
@@ -329,12 +357,13 @@ def main(args, config):
 
     # Load session (or create new one)
     ses = Session(config, args)
-    if (not ses.get_ssh_certificate_expiration()):
-        creds = ses.get_ssh_credentials()
-        save_ssh_creds(self.config.ssh_key_path, creds)
-        logger.debug('New SSH credentials data for user {}:\n{}\n{}'.format(args.ssh_user, creds.public_key, creds.certificate))
-        del(creds)
+    if not ses.load_credentials():
+        logger.debug('No existing credentials, requesting new ones from access proxy')
+        ses.request_new_credentials()
+        if not ses.load_credentials():
+            logger.debug('Failed to request new credentials')
 
+    logger.debug('Tunneling SSH traffic...')
     # Pass to SSH
     # XXX FIXME figure out ProxyUseFdPass
     #s = socket.create_connection((sys.argv[1], int(sys.argv[2])))
