@@ -12,7 +12,7 @@ def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
 
 setup(
-    name = "bcorp",
+        name = "bcorp",
         py_modules = [],
         version = "0.1",
         author = "Guillaume Destuynder",
@@ -26,5 +26,6 @@ setup(
         classifiers = [
             "Development Status :: 5 - Production/Stable",
             "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
-        ],
+            ],
+        scripts = ['bcorp']
 )
