@@ -14,7 +14,7 @@ def read(fname):
 setup(
         name = "bcorp",
         py_modules = [],
-        version = "0.1",
+        version = "0.4",
         author = "Guillaume Destuynder",
         author_email = "gdestuynder@mozilla.com",
         description = ("A BeyondCorp style CLI client for the Federated Access Proxy"),
@@ -22,7 +22,7 @@ setup(
         keywords = "ssh sts bcorp beyond corp federated access proxy sso iam",
         url = "https://github.com/mozilla-iam/bcorp",
         long_description = read('README.md'),
-        install_requires = [],
+        install_requires = ['requests', 'pyaml'],
         classifiers = [
             "Development Status :: 5 - Production/Stable",
             "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
