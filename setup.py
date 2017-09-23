@@ -28,5 +28,5 @@ setup(
             "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
             ],
         scripts = ['bcorp'],
-        data_files = [('config', ['bcorp.yml'])]
+        data_files = [('', ['bcorp.yml'])],
 )
