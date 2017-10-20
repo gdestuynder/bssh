@@ -12,12 +12,33 @@ import logging
 import os
 import requests
 import socket
-import secrets
+try:
+    BrokenPipeError2 = BrokenPipeError
+except NameError:
+    BrokenPipeError2 = socket.error
+try:
+    import secrets
+except ImportError:
+    # replace the function we use in secrets as it doesn't exist in python2.
+    class secrets:
+        def token_urlsafe(length=8, charset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()"):
+            random_bytes = os.urandom(length)
+            len_charset = len(charset)
+            indices = [int(len_charset * (ord(byte) / 256.0)) for byte in random_bytes]
+            return "".join([charset[index] for index in indices])
 import subprocess
 import sys
 import time
 import webbrowser
 import yaml
+
+# Python2 compat
+if hasattr(sys.stdin, "buffer"):
+    stdinpipe = sys.stdin.buffer
+    stdoutpipe = sys.stdout.buffer
+else:
+    stdinpipe = sys.stdin
+    stdoutpipe = sys.stdout
 
 def setup_logging(stream=sys.stdout, level=logging.DEBUG):
     """
@@ -377,19 +398,20 @@ def main(args, config):
     import select
     import fcntl
     fcntl.fcntl(sys.stdin.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+
     while True:
         (r,w,x)= select.select([sys.stdin,s.fileno()], [], [])
         if s.fileno() in r:
             try:
-                sys.stdout.buffer.write(s.recv(8192))
-                sys.stdout.flush()
-            except BrokenPipeError:
+                stdoutpipe.write(s.recv(8192))
+                stdoutpipe.flush()
+            except BrokenPipeError2:
                 logger.debug('ProxyCommand closed stdin')
                 break
         if sys.stdin in r:
             try:
-                s.send(sys.stdin.buffer.read(8192))
-            except BrokenPipeError:
+                s.send(stdinpipe.read(8192))
+            except BrokenPipeError2:
                 logger.debug('Remote host closed connection')
                 break
     s.close()
