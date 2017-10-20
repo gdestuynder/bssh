@@ -4,7 +4,7 @@
 # Copyright (c) 2014-2017 Mozilla Corporation
 # Author: gdestuynder@mozilla.com
 PROJECT := bcorp
-VERSION := 0.2
+VERSION := 0.5
 
 all:
 	./setup.py build

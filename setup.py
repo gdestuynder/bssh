@@ -14,7 +14,7 @@ def read(fname):
 setup(
         name = "bcorp",
         py_modules = [],
-        version = "0.4",
+        version = "0.5",
         author = "Guillaume Destuynder",
         author_email = "gdestuynder@mozilla.com",
         description = ("A BeyondCorp style CLI client for the Federated Access Proxy"),
