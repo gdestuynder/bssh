@@ -17,15 +17,9 @@ try:
 except NameError:
     BrokenPipeError2 = socket.error
 try:
-    import secrets
-except ImportError:
-    # replace the function we use in secrets as it doesn't exist in python2.
-    class secrets:
-        def token_urlsafe(length=8, charset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()"):
-            random_bytes = os.urandom(length)
-            len_charset = len(charset)
-            indices = [int(len_charset * (ord(byte) / 256.0)) for byte in random_bytes]
-            return "".join([charset[index] for index in indices])
+    FileNotFoundError2 = FileNotFoundError
+except NameError:
+    FileNotFoundError = IOError
 import subprocess
 import sys
 import time
@@ -139,10 +133,20 @@ class Session():
         jar.set(self._API_SESSION_NAME, self.tokens.access_proxy.value)
         return jar
 
+    def _gen_token(length=8, charset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()"):
+        """
+        Returns a random token, to be used as session identifier. Must be using 'true' random as this is
+        security-sensitive. Session identifiers are credential-equivalents.
+        """
+        random_bytes = os.urandom(length)
+        len_charset = len(charset)
+        indices = [int(len_charset * (ord(byte) / 256.0)) for byte in random_bytes]
+        return "".join([charset[index] for index in indices])
+
     def _verify_cli_token(self):
         if self.tokens.cli.exp == None or self.tokens.cli.exp >= time.time() + self._CLI_TOKEN_EXP_DELTA:
             logger.debug('Invalid CLI token, re-generating')
-            self.tokens.cli.value = secrets.token_urlsafe(self._CLI_TOKEN_LEN)
+            self.tokens.cli.value = self._gen_token(self._CLI_TOKEN_LEN)
             self.tokens.cli.exp = time.time()+ self._CLI_TOKEN_EXP_DELTA
             self._save()
             logger.debug('Generated new CLI token: {}'.format(self.tokens.cli.value))
