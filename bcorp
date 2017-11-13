@@ -424,14 +424,14 @@ def main(args, config):
         (r,w,x)= select.select([sys.stdin,s.fileno()], [], [])
         if s.fileno() in r:
             try:
-                stdoutpipe.write(s.recv(8192))
-                stdoutpipe.flush()
+                sys.stdout.write(s.recv(8192))
+                sys.stdout.flush()
             except BrokenPipeError2:
                 logger.debug('ProxyCommand closed stdin')
                 break
         if sys.stdin in r:
             try:
-                s.send(stdinpipe.read(8192))
+                s.send(sys.stdin.read(8192))
             except BrokenPipeError:
                 logger.debug('Remote host closed connection')
                 break
