@@ -25,6 +25,11 @@ try:
     FileNotFoundError
 except NameError:
     FileNotFoundError = IOError
+try:
+    BrokenPipeError
+except BrokenPipeError:
+    import socket
+    BrokenPipeError = socket.error
 
 # Regular imports
 import argparse
@@ -426,7 +431,7 @@ def main(args, config):
             try:
                 sys.stdout.write(s.recv(8192))
                 sys.stdout.flush()
-            except BrokenPipeError2:
+            except BrokenPipeError:
                 logger.debug('ProxyCommand closed stdin')
                 break
         if sys.stdin in r:
